@@ -1,0 +1,125 @@
+name: Monorepo CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'packages/**'
+      - 'services/**'
+      - '.github/workflows/monorepo.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'services/api/**'
+            web:
+              - 'packages/web/**'
+            shared:
+              - 'packages/shared/**'
+            docs:
+              - 'docs/**'
+
+  test-api:
+    needs: detect-changes
+    if: contains(needs.detect-changes.outputs.packages, 'api') || contains(needs.detect-changes.outputs.packages, 'shared')
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+          cache-dependency-path: services/api/go.sum
+      - working-directory: services/api
+        run: |
+          go mod download
+          go generate ./...
+      - working-directory: services/api
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/test?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+        run: go test -race -coverprofile=coverage.out ./...
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-coverage
+          path: services/api/coverage.out
+
+  test-web:
+    needs: detect-changes
+    if: contains(needs.detect-changes.outputs.packages, 'web') || contains(needs.detect-changes.outputs.packages, 'shared')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: packages/web/package-lock.json
+      - working-directory: packages/web
+        run: |
+          npm ci
+          npm run lint
+          npm run test:unit -- --coverage
+          npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: packages/web/dist/
+
+  e2e:
+    needs: [test-api, test-web]
+    if: always() && !failure() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: packages/web/dist/
+      - name: Run E2E tests
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+        env:
+          CI: true
+          BASE_URL: http://localhost:3000
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
