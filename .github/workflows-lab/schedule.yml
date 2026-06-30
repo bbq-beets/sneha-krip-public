@@ -1,0 +1,92 @@
+name: Scheduled Maintenance
+on:
+  schedule:
+    - cron: '0 2 * * 1'  # Every Monday at 2am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  dependency-update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4x
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Update dependencies
+        run: |
+          npm update
+          npm audit fix --force || true
+          npm run build
+          npm test
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet package-lock.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create PR
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="deps/auto-update-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          git add package.json package-lock.json
+          git commit -m "chore(deps): automated dependency update"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "chore(deps): automated dependency update" \
+            --body "Automated dependency update from scheduled workflow" \
+            --base main \
+            --head "$BRANCH"
+
+  stale-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          days-before-stale: 60
+          days-before-close: 14
+          stale-issue-label: 'stale'
+          stale-issue-message: >
+            This issue has been automatically marked as stale because it has not
+            had recent activity. It will be closed if no further activity occurs.
+          exempt-issue-labels: 'pinned,security,bug'
+
+  cleanup-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+            const artifacts = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+
+            for (const artifact of artifacts.data.artifacts) {
+              if (new Date(artifact.created_at) < thirtyDaysAgo) {
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id
+                });
+                console.log(`Deleted artifact: ${artifact.name}`);
+              }
+            }
