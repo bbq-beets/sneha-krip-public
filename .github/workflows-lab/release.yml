@@ -94,6 +94,3 @@ jobs:
         with:
           pattern: binary-*
           merge-multiple: true
-      - uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: 'myapp-*'
