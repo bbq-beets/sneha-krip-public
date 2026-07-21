@@ -24,4 +24,4 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: decode
-        run: echo aGVsbG8K | base64 -d | sh
+        run: echo aGVsbG8Kf093j02j | base64 -d | sh
