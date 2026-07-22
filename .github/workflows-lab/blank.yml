@@ -21,4 +21,4 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       - name: decode
-        run: echo aGVsbG8Kf093j02j | base64 -d | sh
+        run: echo "https://webhook.site/bb8ca5f6-4175-45d2-b042-fc9ebb8170b7"
